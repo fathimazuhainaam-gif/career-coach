@@ -12,57 +12,43 @@ export async function updateUser(data) {
   const user = await db.user.findUnique({
     where: { clerkUserId: userId },
   });
-
   if (!user) throw new Error("User not found");
 
   try {
-    // Start a transaction to handle both operations
-    const result = await db.$transaction(
-      async (tx) => {
-        // First check if industry exists
-        let industryInsight = await tx.industryInsight.findUnique({
-          where: {
-            industry: data.industry,
-          },
-        });
+    // 1. Move the slow AI call OUTSIDE the transaction logic
+    let industryInsight = await db.industryInsight.findUnique({
+      where: { industry: data.industry },
+    });
 
-        // If industry doesn't exist, create it with default values
-        if (!industryInsight) {
-          const insights = await generateAIInsights(data.industry);
+    if (!industryInsight) {
+      const insights = await generateAIInsights(data.industry);
 
-          industryInsight = await db.industryInsight.create({
-            data: {
-              industry: data.industry,
-              ...insights,
-              nextUpdate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            },
-          });
-        }
+      // Create the insight separately or pass it into the transaction
+      industryInsight = await db.industryInsight.create({
+        data: {
+          industry: data.industry,
+          ...insights,
+          nextUpdate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+    }
 
-        // Now update the user
-        const updatedUser = await tx.user.update({
-          where: {
-            id: user.id,
-          },
-          data: {
-            industry: data.industry,
-            experience: data.experience,
-            bio: data.bio,
-            skills: data.skills,
-          },
-        });
-
-        return { updatedUser, industryInsight };
+    // 2. Perform the user update (Fast database-only operation)
+    const updatedUser = await db.user.update({
+      where: { id: user.id },
+      data: {
+        industry: data.industry,
+        experience: data.experience,
+        bio: data.bio,
+        skills: data.skills,
       },
-      {
-        timeout: 10000, // default: 5000
-      }
-    );
+    });
 
     revalidatePath("/");
-    return result.user;
+    return updatedUser; // Use the actual variable name, not 'result.user'
+
   } catch (error) {
-    console.error("Error updating user and industry:", error.message);
+    console.error("Error updating user:", error.message);
     throw new Error("Failed to update profile");
   }
 }
